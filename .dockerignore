@@ -1,0 +1,13 @@
+.git
+.github
+.codegraph
+.atl
+.kit
+.env
+.env.*
+.phpunit.cache
+coverage
+node_modules
+storage/logs/*
+tests
+vendor
