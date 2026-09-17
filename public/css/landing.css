@@ -188,14 +188,17 @@ button { font: inherit; }
 .brand {
     display: inline-flex;
     align-items: center;
-    align-self: stretch;
-    padding-inline: .8rem;
+    align-self: center;
     color: inherit;
-    background: var(--color-dark);
     text-decoration: none;
 }
 
-.brand__logo { display: block; width: auto; height: 4.25rem; }
+.brand__logo {
+    display: block;
+    width: auto;
+    height: 4.25rem;
+    clip-path: ellipse(50% 50% at 50% 50%);
+}
 .brand--footer .brand__logo { height: 4rem; }
 
 .menu-toggle {
