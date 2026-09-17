@@ -1,0 +1,195 @@
+#!/bin/sh
+set -eu
+
+ROOT=$(CDPATH= cd -P "$(dirname "$0")/.." && pwd)
+PROFILE='laravel'
+command_name=${1:-help}
+[ "$#" -eq 0 ] || shift
+
+unavailable() {
+  printf '%s\n' 'Capability not available for this project.' >&2
+  exit 2
+}
+need() {
+  command -v "$1" >/dev/null 2>&1 || { printf 'Required tool not found: %s\n' "$1" >&2; exit 2; }
+}
+dependencies_ready() {
+  case "$PROFILE" in
+    astro|react|nextjs|node-service) [ -d "$ROOT/node_modules" ] ;;
+    laravel) [ -d "$ROOT/vendor" ] ;;
+    django|python-automation) [ -x "$ROOT/.venv/bin/python" ] ;;
+    go-service) return 0 ;;
+  esac
+}
+need_dependencies() {
+  dependencies_ready || { printf '%s\n' 'Dependencies are not installed. Run ./bin/kit install.' >&2; exit 2; }
+}
+show_help() {
+  cat <<'EOF_HELP'
+Usage: ./bin/kit <command>
+
+Commands: help install dev stop status logs test check build doctor
+Each command delegates to scripts/project, the project command source of truth.
+EOF_HELP
+}
+profile_components() {
+  case "$PROFILE" in
+    astro) printf '%s' 'Astro site; expected development URL: http://localhost:4321' ;;
+    react) printf '%s' 'React frontend; expected development URL: http://localhost:5173' ;;
+    nextjs) printf '%s' 'Next.js application; expected development URL: http://localhost:3000' ;;
+    laravel) printf '%s' 'Laravel application; default development URL: http://127.0.0.1:8000; PostgreSQL is selected but not locally managed' ;;
+    django) printf '%s' 'Django application; expected development URL: http://localhost:8000; PostgreSQL is selected but not locally managed' ;;
+    go-service) printf '%s' 'Go HTTP service; expected development URL: http://localhost:8080/health' ;;
+    node-service) printf '%s' 'Node.js TypeScript service; expected development URL: http://localhost:3000' ;;
+    python-automation) printf '%s' 'Python automation command; no managed HTTP process' ;;
+  esac
+}
+runtime_dir="$ROOT/.kit/run"
+pid_file="$runtime_dir/app.pid"
+port_file="$runtime_dir/app.port"
+log_file="$runtime_dir/app.log"
+managed_pid() {
+  [ -f "$pid_file" ] || return 1
+  pid=$(cat "$pid_file" 2>/dev/null) || return 1
+  case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+  kill -0 "$pid" 2>/dev/null || return 1
+  printf '%s' "$pid"
+}
+clear_stale_runtime() {
+  managed_pid >/dev/null 2>&1 || rm -f "$pid_file" "$port_file"
+}
+port_is_available() {
+  php -r '$s = @fsockopen("127.0.0.1", (int) $argv[1]); if ($s) { fclose($s); exit(1); }' "$1"
+}
+laravel_dev() {
+  need php
+  need_dependencies
+  clear_stale_runtime
+  if pid=$(managed_pid); then
+    port=$(cat "$port_file" 2>/dev/null || printf unknown)
+    printf 'Application is already running (PID %s, port %s).\n' "$pid" "$port"
+    return
+  fi
+  port=${KIT_PORT:-8000}
+  case "$port" in ''|*[!0-9]*) printf '%s\n' 'KIT_PORT must be a numeric TCP port.' >&2; exit 2 ;; esac
+  if [ -z "${KIT_PORT:-}" ]; then
+    while [ "$port" -le 8099 ] && ! port_is_available "$port"; do port=$((port + 1)); done
+    [ "$port" -le 8099 ] || { printf '%s\n' 'No available development port found between 8000 and 8099.' >&2; exit 2; }
+  elif ! port_is_available "$port"; then
+    printf 'Requested development port %s is already in use.\n' "$port" >&2
+    exit 2
+  fi
+  mkdir -p "$runtime_dir"
+  : > "$log_file"
+  (cd "$ROOT"; nohup php artisan serve --host=127.0.0.1 --port="$port" >>"$log_file" 2>&1 & echo $! >"$pid_file")
+  printf '%s\n' "$port" > "$port_file"
+  attempts=0
+  while [ "$attempts" -lt 50 ]; do
+    if ! managed_pid >/dev/null 2>&1; then
+      printf '%s\n' 'Application failed to start. Run ./bin/kit logs for details.' >&2
+      exit 1
+    fi
+    if ! port_is_available "$port"; then
+      printf 'Application running at http://127.0.0.1:%s\n' "$port"
+      return
+    fi
+    attempts=$((attempts + 1))
+    sleep 0.1
+  done
+  printf '%s\n' 'Application did not become ready in time. Run ./bin/kit logs for details.' >&2
+  exit 1
+}
+laravel_stop() {
+  clear_stale_runtime
+  if ! pid=$(managed_pid); then
+    printf '%s\n' 'Application is not running.'
+    return
+  fi
+  kill "$pid"
+  attempts=0
+  while kill -0 "$pid" 2>/dev/null && [ "$attempts" -lt 50 ]; do attempts=$((attempts + 1)); sleep 0.1; done
+  if kill -0 "$pid" 2>/dev/null; then printf 'Application process %s did not stop cleanly.\n' "$pid" >&2; exit 1; fi
+  rm -f "$pid_file" "$port_file"
+  printf '%s\n' 'Application stopped.'
+}
+laravel_logs() {
+  [ -f "$log_file" ] || { printf '%s\n' 'No application log is available yet.'; return; }
+  cat "$log_file"
+}
+show_status() {
+  printf 'Profile: %s\n' "$PROFILE"
+  printf 'Components: %s\n' "$(profile_components)"
+  if command -v git >/dev/null 2>&1 && git -C "$ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    branch=$(git -C "$ROOT" branch --show-current 2>/dev/null || printf detached)
+    if [ -n "$(git -C "$ROOT" status --porcelain)" ]; then tree='changes present'; else tree=clean; fi
+    printf 'Git: branch %s; working tree %s\n' "$branch" "$tree"
+  else printf '%s\n' 'Git: not initialized'; fi
+  if dependencies_ready; then dep=ready; else dep='not installed'; fi
+  printf 'Dependencies: %s\n' "$dep"
+  case "$PROFILE" in astro|react|nextjs|node-service) runtime=node ;; laravel) runtime=php ;; django|python-automation) runtime=python3 ;; go-service) runtime=go ;; esac
+  if command -v "$runtime" >/dev/null 2>&1; then runtime_state=available; else runtime_state=missing; fi
+  printf 'Runtime (%s): %s\n' "$runtime" "$runtime_state"
+  if [ -f "$ROOT/.env" ]; then printf '%s\n' 'Environment: present (contents not inspected)'; elif [ -f "$ROOT/.env.example" ]; then printf '%s\n' 'Environment: example available; no secret values inspected'; else printf '%s\n' 'Environment: not required by this scaffold'; fi
+  if [ "$PROFILE" = laravel ]; then
+    clear_stale_runtime
+    if pid=$(managed_pid); then
+      port=$(cat "$port_file" 2>/dev/null || printf unknown)
+      printf 'Managed application: running (PID %s)\n' "$pid"
+      printf 'URL: http://127.0.0.1:%s\n' "$port"
+      printf 'Port: %s\n' "$port"
+    else
+      printf '%s\n' 'Managed application: stopped'
+    fi
+  else
+    printf '%s\n' 'Process state: not determined or managed by this scaffold.'
+  fi
+}
+show_doctor() {
+  printf 'kit doctor for %s\n' "$PROFILE"; show_status
+  ready=yes
+  command -v "$runtime" >/dev/null 2>&1 || ready=no
+  dependencies_ready || ready=no
+  case "$PROFILE" in
+    laravel)
+      if command -v php >/dev/null 2>&1 && dependencies_ready && [ -f "$ROOT/.env" ] && (cd "$ROOT" && php artisan migrate:status --no-interaction >/dev/null 2>&1); then
+        printf '%s\n' 'Database: reachable; migration status available.'
+      else
+        printf '%s\n' 'Database: unavailable, not configured, or migrations cannot be inspected.'
+        ready=no
+      fi
+      ;;
+    django|nextjs) printf '%s\n' 'Service checks: no local database or external service is configured or inspected.' ;;
+    *) printf '%s\n' 'Service checks: no managed local services are configured.' ;;
+  esac
+  if [ "$ready" = yes ]; then printf '%s\n' 'READY: runtime and local dependencies are available.'; else printf '%s\n' 'NOT READY: install local dependencies and satisfy missing runtime checks before running project commands.'; fi
+}
+install() {
+  case "$PROFILE" in
+    astro|react|nextjs|node-service) need npm; (cd "$ROOT" && npm install) ;;
+    laravel) need composer; (cd "$ROOT" && composer install) ;;
+    django|python-automation) need python3; (cd "$ROOT" && python3 -m venv .venv && .venv/bin/python -m pip install --upgrade pip && .venv/bin/python -m pip install -e '.[dev]') ;;
+    go-service) need go; (cd "$ROOT" && go mod download) ;;
+    *) unavailable ;;
+  esac
+}
+run_node() { need npm; need_dependencies; (cd "$ROOT" && npm run "$1"); }
+run_python() { need_dependencies; (cd "$ROOT" && .venv/bin/python "$@"); }
+case "$command_name" in
+  help|-h|--help) show_help ;;
+  status) show_status ;;
+  doctor) show_doctor ;;
+  install) install ;;
+  stop) case "$PROFILE" in laravel) laravel_stop ;; *) unavailable ;; esac ;;
+  logs) case "$PROFILE" in laravel) laravel_logs ;; *) unavailable ;; esac ;;
+  dev)
+    case "$PROFILE" in astro|react|nextjs|node-service) run_node dev ;; laravel) laravel_dev ;; django) run_python manage.py runserver ;; go-service) need go; (cd "$ROOT" && go run ./cmd/service) ;; *) unavailable ;; esac ;;
+  start)
+    case "$PROFILE" in node-service) run_node start ;; go-service) need go; (cd "$ROOT" && go run ./cmd/service) ;; *) unavailable ;; esac ;;
+  build)
+    case "$PROFILE" in astro|react|nextjs|node-service) run_node build ;; go-service) need go; (cd "$ROOT" && go build ./cmd/service) ;; *) unavailable ;; esac ;;
+  test)
+    case "$PROFILE" in react|nextjs|node-service) run_node test ;; django|python-automation) run_python -m pytest ;; laravel) need composer; need_dependencies; (cd "$ROOT" && composer test) ;; go-service) need go; (cd "$ROOT" && go test ./...) ;; *) unavailable ;; esac ;;
+  check)
+    case "$PROFILE" in astro|react|nextjs|node-service) run_node check ;; django) run_python manage.py check ;; python-automation) run_python -m ruff check . ;; laravel) need composer; need_dependencies; (cd "$ROOT" && composer check) ;; go-service) need go; (cd "$ROOT" && go vet ./...) ;; *) unavailable ;; esac ;;
+  *) printf 'Unknown command: %s\n' "$command_name" >&2; exit 2 ;;
+esac

@@ -1,0 +1,19 @@
+.DS_Store
+.env
+.env.*
+!.env.example
+node_modules/
+.venv/
+vendor/
+dist/
+build/
+coverage/
+.phpunit.cache/
+
+# Local runtime and agent tooling artifacts
+storage/logs/*.log
+.atl/
+__pycache__/
+*.py[cod]
+
+.kit/
