@@ -23,9 +23,11 @@ Web con turnero + landing, y también un sistema interno para facturación, gest
 
 Phase 1 — the public landing at `/` includes a white, sticky CarServ-inspired navigation, red-led FyB identity, image-led sections, and verified WhatsApp contacts for both branches.
 
+The current visual preview is deployed on Render Free at <https://fyb-car-preview.onrender.com>. It intentionally runs without a database while the landing remains read-only; PostgreSQL stays selected for future persistent product slices. Free instances sleep after inactivity, so the first request can take longer.
+
 ## Next objective
 
-Replace provisional photography, add verified social links when supplied, then define the real appointment-booking slice.
+Replace provisional photography, add verified social links when supplied, then define the real appointment-booking slice and its persistent PostgreSQL requirements.
 
 ## Relevant documentation
 
