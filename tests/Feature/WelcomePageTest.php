@@ -33,6 +33,22 @@ final class WelcomePageTest extends TestCase
             ->assertSee('<picture>', false);
     }
 
+    public function test_landing_page_generates_https_assets_behind_render_proxy(): void
+    {
+        $this->withServerVariables(['REMOTE_ADDR' => '10.0.0.10'])
+            ->withHeaders([
+                'X-Forwarded-Host' => 'fyb-car-preview.onrender.com',
+                'X-Forwarded-Port' => '443',
+                'X-Forwarded-Proto' => 'https',
+            ])
+            ->get('/')
+            ->assertOk()
+            ->assertSee('href="https://fyb-car-preview.onrender.com/css/landing.css"', false)
+            ->assertSee('src="https://fyb-car-preview.onrender.com/js/landing.js"', false)
+            ->assertSee('src="https://fyb-car-preview.onrender.com/images/brand/fyb-logo-red-v1-180.webp"', false)
+            ->assertDontSee('http://fyb-car-preview.onrender.com/', false);
+    }
+
     public function test_landing_page_uses_red_led_palette_without_pink_tokens(): void
     {
         $stylesheet = file_get_contents(public_path('css/landing.css'));
